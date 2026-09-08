@@ -442,6 +442,91 @@ async def get_trace(trace_id: str, request: Request):
         raise HTTPException(status_code=500, detail=str(exc))
 
 
+# ---- EVO fleet routing routes ----
+
+route_router = APIRouter(prefix="/v1/route", tags=["route"])
+
+
+class RouteGenerateRequest(BaseModel):
+    messages: List[Dict[str, Any]]
+    channel_id: str = ""
+    urgency: float = 0.5
+    model: Optional[str] = None
+    max_tokens: int = 1024
+    temperature: float = 0.7
+
+
+def _get_evo_scheduler(app) -> Any:
+    """Lazily create and cache the EvoScheduler on app.state."""
+    scheduler = getattr(app.state, "evo_scheduler", None)
+    if scheduler is None:
+        from openjarvis.learning.routing.evo_scheduler import EvoScheduler
+
+        scheduler = EvoScheduler()
+        app.state.evo_scheduler = scheduler
+    return scheduler
+
+
+@route_router.post("/generate")
+async def route_generate(req: RouteGenerateRequest, request: Request):
+    """Classify + route a generation request to the best-fit EVO model,
+    then execute it via the app's engine (a MultiEngine with the EVO
+    fleet merged in, once ``evo_fleet`` is registered and healthy)."""
+    from openjarvis.core.types import Message, Role
+    from openjarvis.learning.routing.evo_scheduler import EvoIsolatedModelError
+
+    scheduler = _get_evo_scheduler(request.app)
+    last_user_text = next(
+        (
+            m.get("content", "")
+            for m in reversed(req.messages)
+            if m.get("role") == "user"
+        ),
+        "",
+    )
+    trace_store = getattr(request.app.state, "trace_store", None)
+    try:
+        decision = scheduler.select(
+            last_user_text,
+            channel_id=req.channel_id,
+            urgency=req.urgency,
+            force_model=req.model,
+            trace_store=trace_store,
+        )
+    except EvoIsolatedModelError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+
+    engine = getattr(request.app.state, "engine", None)
+    if engine is None:
+        raise HTTPException(status_code=503, detail="No engine configured")
+
+    scheduler.begin_hold(req.channel_id)
+    try:
+        messages = [
+            Message(role=Role(m.get("role", "user")), content=m.get("content", ""))
+            for m in req.messages
+        ]
+        result = engine.generate(
+            messages,
+            model=decision["model"],
+            temperature=req.temperature,
+            max_tokens=req.max_tokens,
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    finally:
+        scheduler.end_hold(req.channel_id)
+
+    return {**result, "routing": decision}
+
+
+@route_router.get("/status")
+async def route_status(request: Request):
+    """Live EVO fleet + scheduler state (VRAM/RAM, loaded models, holds)."""
+    scheduler = _get_evo_scheduler(request.app)
+    return scheduler.status()
+
+
 # ---- Telemetry routes ----
 
 telemetry_router = APIRouter(prefix="/v1/telemetry", tags=["telemetry"])
@@ -1152,6 +1237,7 @@ def include_all_routes(app) -> None:
     app.include_router(agents_router)
     app.include_router(memory_router)
     app.include_router(traces_router)
+    app.include_router(route_router)
     app.include_router(telemetry_router)
     app.include_router(skills_router)
     app.include_router(sessions_router)
