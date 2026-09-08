@@ -5,6 +5,7 @@ import { InputArea } from './InputArea';
 import { StreamingDots } from './StreamingDots';
 import { useAppStore } from '../../lib/store';
 import { Sparkles, PanelRightOpen, PanelRightClose, Database, MessageSquare, X } from 'lucide-react';
+import { ReactiveOrb } from './ReactiveOrb';
 import { listConnectors } from '../../lib/connectors-api';
 
 function getGreeting(): string {
@@ -123,11 +124,8 @@ export function ChatArea() {
       >
         {isEmpty ? (
           <div className="flex flex-col items-center justify-center h-full px-4">
-            <div
-              className="w-12 h-12 rounded-2xl flex items-center justify-center mb-4"
-              style={{ background: 'var(--color-accent-subtle)', color: 'var(--color-accent)' }}
-            >
-              <Sparkles size={24} />
+            <div className="mb-6">
+              <ReactiveOrb size={112} />
             </div>
             <h2 className="text-xl font-semibold mb-2" style={{ color: 'var(--color-text)' }}>
               {getGreeting()}
