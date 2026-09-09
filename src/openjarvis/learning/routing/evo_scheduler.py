@@ -32,6 +32,7 @@ from openjarvis.intelligence.evo_catalog import (
     EVO_ROUTER_PORT,
     register_evo_models,
 )
+from openjarvis.learning.routing.learned_router import LearnedRouterPolicy
 from openjarvis.learning.routing.router import HeuristicRouter, build_routing_context
 from openjarvis.system import evo_router_client
 
@@ -58,6 +59,14 @@ class EvoScheduler:
         register_evo_models()
         self._fleet = fleet or EvoFleetEngine()
         self._state = _SchedulerState()
+        # Shadow-mode only: observes every heuristic decision and predicts
+        # what it would have chosen (see _shadow_observe), but its output
+        # NEVER drives routing. This is how the policy accumulates the
+        # trace history Phase 5 needs before it's ever considered for
+        # going live.
+        self._learned = LearnedRouterPolicy(
+            available_models=self._safe_available_models()
+        )
 
     # -- Session holds --------------------------------------------------------
 
@@ -137,9 +146,26 @@ class EvoScheduler:
             "swapped": False,
         }
 
+        if force_model is None:
+            self._shadow_observe(query, model, decision)
+
         if trace_store is not None:
             self._log_trace(trace_store, query, decision, started)
         return decision
+
+    def _shadow_observe(self, query: str, model: str, decision: Dict[str, Any]) -> None:
+        """Record the heuristic's choice for LearnedRouterPolicy and log
+        what it would have picked instead — pure observation, never used
+        to route (Phase 5 prerequisite: build up trace history before
+        ever considering the learned policy live)."""
+        try:
+            ctx = build_routing_context(query)
+            shadow_model = self._learned.select_model(ctx)
+            self._learned.observe(query, model, outcome="success", feedback=None)
+            decision["shadow_model"] = shadow_model
+            decision["shadow_agrees"] = shadow_model == model
+        except Exception:
+            logger.debug("Shadow-mode observation failed", exc_info=True)
 
     def swap_to_router_model(
         self, model_id: str, *, channel_id: str = ""
@@ -209,6 +235,7 @@ class EvoScheduler:
             "cooldown_remaining_s": max(
                 0.0, COOLDOWN_SECONDS - (time.monotonic() - self._state.last_swap_ts)
             ),
+            "shadow_learned_policy": self._learned.policy_map,
         }
 
     # -- Internal ---------------------------------------------------------

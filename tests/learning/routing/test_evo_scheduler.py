@@ -98,3 +98,55 @@ class TestHoldsAndCooldown:
 
     def test_cooldown_constant_is_positive(self) -> None:
         assert COOLDOWN_SECONDS > 0
+
+
+class TestShadowMode:
+    def test_heuristic_decision_never_overridden_by_shadow(
+        self, scheduler: EvoScheduler
+    ) -> None:
+        """The whole point of shadow mode: it observes, it never decides."""
+        decision = scheduler.select("write a function to reverse a string")
+        assert (
+            decision["model"] == "qwen3-coder-30b-a3b"
+        )  # heuristic's own pick, unchanged
+
+    def test_shadow_fields_present_on_heuristic_path(
+        self, scheduler: EvoScheduler
+    ) -> None:
+        decision = scheduler.select("write some code")
+        assert "shadow_model" in decision
+        assert "shadow_agrees" in decision
+
+    def test_shadow_fields_absent_on_forced_path(self, scheduler: EvoScheduler) -> None:
+        decision = scheduler.select("anything", force_model="gpt-oss-120b")
+        assert "shadow_model" not in decision
+        assert "shadow_agrees" not in decision
+
+    def test_shadow_agrees_with_itself_on_repeat_query(
+        self, scheduler: EvoScheduler
+    ) -> None:
+        # First call bootstraps the learned policy's map for this query
+        # class to whatever the heuristic picked; a second call of the
+        # same class should then see the shadow policy agree.
+        query = "write a function to reverse a string"
+        scheduler.select(query)
+        decision = scheduler.select(query)
+        assert decision["shadow_agrees"] is True
+
+    def test_status_exposes_learned_policy_map(self, scheduler: EvoScheduler) -> None:
+        scheduler.select("write a function to reverse a string")
+        status = scheduler.status()
+        assert "shadow_learned_policy" in status
+        assert isinstance(status["shadow_learned_policy"], dict)
+        assert len(status["shadow_learned_policy"]) > 0
+
+    def test_shadow_failure_never_breaks_routing(
+        self, scheduler: EvoScheduler, monkeypatch
+    ) -> None:
+        def boom(*a, **k):
+            raise RuntimeError("shadow exploded")
+
+        monkeypatch.setattr(scheduler._learned, "observe", boom)
+        decision = scheduler.select("write some code")  # must not raise
+        assert decision["model"]  # routing still produced a real answer
+        assert "shadow_model" not in decision  # exception swallowed before it was set
