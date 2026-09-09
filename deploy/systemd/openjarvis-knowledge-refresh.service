@@ -1,0 +1,24 @@
+[Unit]
+Description=OpenJarvis cross-project knowledge refresh
+After=network.target
+
+[Service]
+Type=oneshot
+User=openjarvis
+WorkingDirectory=/opt/openjarvis
+ExecStart=/opt/openjarvis/.venv/bin/jarvis knowledge refresh --all
+Environment=HOME=/opt/openjarvis
+EnvironmentFile=-/etc/openjarvis/env
+
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/opt/openjarvis
+ProtectHome=true
+PrivateTmp=true
+ProtectControlGroups=true
+ProtectKernelLogs=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true

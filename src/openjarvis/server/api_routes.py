@@ -467,6 +467,27 @@ def _get_evo_scheduler(app) -> Any:
     return scheduler
 
 
+def _maybe_evo_model(app, query: str, *, channel_id: str = "") -> Optional[str]:
+    """Return an EvoScheduler-picked model for *query*, or None.
+
+    Deliberately best-effort and silent: this lets any existing chat path
+    (e.g. the ``/v1/chat/stream`` WebSocket) opportunistically benefit from
+    EVO-aware routing without ever becoming a hard dependency — on a
+    non-EVO deployment of this same codebase the fleet is simply
+    unreachable and callers keep their prior default-model behaviour.
+    """
+    try:
+        scheduler = _get_evo_scheduler(app)
+        decision = scheduler.select(query, channel_id=channel_id)
+        model = decision.get("model")
+        engine = getattr(app.state, "engine", None)
+        if model and engine is not None and model in engine.list_models():
+            return model
+    except Exception:
+        logger.debug("EVO model selection skipped", exc_info=True)
+    return None
+
+
 @route_router.post("/generate")
 async def route_generate(req: RouteGenerateRequest, request: Request):
     """Classify + route a generation request to the best-fit EVO model,
@@ -525,6 +546,70 @@ async def route_status(request: Request):
     """Live EVO fleet + scheduler state (VRAM/RAM, loaded models, holds)."""
     scheduler = _get_evo_scheduler(request.app)
     return scheduler.status()
+
+
+# ---- Cross-project knowledge routes ----
+
+projects_router = APIRouter(prefix="/v1/projects", tags=["projects"])
+
+
+def _get_project_registry(app) -> Any:
+    """Lazily create and cache the ProjectRegistry on app.state.
+
+    Raises ``HTTPException(503)`` if no memory backend is configured or
+    the configured backend can't support atomic per-project re-indexing
+    (see ``ProjectRegistry``'s ``replace_source`` requirement).
+    """
+    registry = getattr(app.state, "project_registry", None)
+    if registry is None:
+        memory_backend = getattr(app.state, "memory_backend", None)
+        if memory_backend is None:
+            raise HTTPException(status_code=503, detail="No memory backend configured")
+        from openjarvis.knowledge.projects import ProjectRegistry
+
+        try:
+            registry = ProjectRegistry(memory_backend)
+        except TypeError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        app.state.project_registry = registry
+    return registry
+
+
+@projects_router.get("")
+async def list_projects(request: Request):
+    """List registered EVO projects."""
+    registry = _get_project_registry(request.app)
+    return {"projects": registry.project_ids}
+
+
+@projects_router.get("/{project_id}/summary")
+async def project_summary(
+    project_id: str, request: Request, query: str = "", top_k: int = 10
+):
+    """Search one project's indexed knowledge (README, git log, issues/PRs)."""
+    registry = _get_project_registry(request.app)
+    try:
+        results = registry.summary(project_id, query, top_k=top_k)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return {
+        "project": project_id,
+        "results": [
+            {"content": r.content, "score": r.score, "metadata": r.metadata}
+            for r in results
+        ],
+    }
+
+
+@projects_router.post("/{project_id}/refresh")
+async def refresh_project(project_id: str, request: Request):
+    """Re-index one project's knowledge on demand (also runs on a timer)."""
+    registry = _get_project_registry(request.app)
+    try:
+        count = registry.refresh(project_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return {"project": project_id, "documents": count}
 
 
 # ---- Telemetry routes ----
@@ -876,10 +961,12 @@ async def websocket_chat_stream(websocket: WebSocket):
                 )
                 continue
 
-            model = data.get("model") or getattr(
-                websocket.app.state,
-                "model",
-                "default",
+            model = (
+                data.get("model")
+                or _maybe_evo_model(
+                    websocket.app, message, channel_id=data.get("channel_id", "")
+                )
+                or getattr(websocket.app.state, "model", "default")
             )
             engine = getattr(websocket.app.state, "engine", None)
             if engine is None:
@@ -1238,6 +1325,7 @@ def include_all_routes(app) -> None:
     app.include_router(memory_router)
     app.include_router(traces_router)
     app.include_router(route_router)
+    app.include_router(projects_router)
     app.include_router(telemetry_router)
     app.include_router(skills_router)
     app.include_router(sessions_router)
