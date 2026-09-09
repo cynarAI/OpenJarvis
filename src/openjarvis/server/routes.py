@@ -449,8 +449,18 @@ def _engine_key_for_model(engine: Any, model: str) -> str | None:
     return None
 
 
-def _uses_direct_cloud_router(engine: Any, model: str) -> bool:
-    """Whether *model* should bypass the configured engine for direct cloud."""
+def _uses_direct_cloud_router(engine: Any, model: str, app_config=None) -> bool:
+    """Whether *model* should bypass the configured engine for direct cloud.
+
+    Gated on ``intelligence.allow_cloud`` — a client naming a cloud-shaped
+    model (e.g. ``gpt-4``) must never reach a real cloud API when cloud
+    engines are disabled, independent of the MultiEngine/discovery gates.
+    """
+    if app_config is not None and not getattr(
+        app_config.intelligence, "allow_cloud", False
+    ):
+        return False
+
     from openjarvis.server.cloud_router import is_cloud_model
 
     return is_cloud_model(model) and _engine_key_for_model(engine, model) != "litellm"
@@ -805,7 +815,7 @@ async def _handle_stream_tools(
     messages = _to_messages(req.messages)
     messages = _ensure_identity_prompt(messages, app_config)
     chunk_id = f"chatcmpl-{uuid.uuid4().hex[:12]}"
-    use_cloud = _uses_direct_cloud_router(engine, model)
+    use_cloud = _uses_direct_cloud_router(engine, model, app_config)
     telemetry_engine = (
         "cloud" if use_cloud else (_engine_key_for_model(engine, model) or "ollama")
     )
@@ -944,7 +954,7 @@ async def _handle_stream(
 
     # Route directly to the right backend — bypasses engine routing entirely
     # so broken MultiEngine state can never misdirect requests.
-    use_cloud = _uses_direct_cloud_router(engine, model)
+    use_cloud = _uses_direct_cloud_router(engine, model, app_config)
     telemetry_engine = (
         "cloud" if use_cloud else (_engine_key_for_model(engine, model) or "ollama")
     )
@@ -1223,6 +1233,12 @@ async def reload_cloud_engine(request: Request):
     key so that cloud models become available without a full app restart.
     """
     import os
+
+    if not getattr(request.app.state.config.intelligence, "allow_cloud", False):
+        raise HTTPException(
+            status_code=403,
+            detail="Cloud engines are disabled (intelligence.allow_cloud is false)",
+        )
 
     submitted_keys: dict[str, str] | None = None
     try:
