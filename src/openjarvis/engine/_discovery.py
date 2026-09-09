@@ -132,7 +132,12 @@ def discover_engines(config: JarvisConfig) -> List[Tuple[str, InferenceEngine]]:
     # threads collapses that to roughly the slowest single probe. The
     # healthy.sort() below normalizes order, so completion order is
     # irrelevant and the result is identical to the serial version (#263).
-    keys = list(EngineRegistry.keys())
+    allow_cloud = config.intelligence.allow_cloud
+    keys = [
+        key
+        for key in EngineRegistry.keys()
+        if allow_cloud or not getattr(EngineRegistry.get(key), "is_cloud", False)
+    ]
 
     def _probe(key: str) -> Tuple[str, InferenceEngine] | None:
         try:
@@ -198,9 +203,18 @@ def get_engine(
     def _usable(engine: InferenceEngine) -> bool:
         return engine.health() and (model is None or engine.can_serve(model))
 
+    allow_cloud = config.intelligence.allow_cloud
+
     if engine_key:
         if not EngineRegistry.contains(engine_key):
             logger.warning("Requested engine %r is not registered", engine_key)
+            return None
+        if not allow_cloud and getattr(EngineRegistry.get(engine_key), "is_cloud", False):
+            logger.warning(
+                "Requested engine %r is a cloud engine but intelligence.allow_cloud "
+                "is false; refusing",
+                engine_key,
+            )
             return None
         try:
             engine = _make_engine(engine_key, config)
@@ -217,7 +231,11 @@ def get_engine(
 
     default_key = config.engine.default
     default_is_cloud: bool | None = None
-    if default_key and EngineRegistry.contains(default_key):
+    if (
+        default_key
+        and EngineRegistry.contains(default_key)
+        and (allow_cloud or not getattr(EngineRegistry.get(default_key), "is_cloud", False))
+    ):
         default_cls = EngineRegistry.get(default_key)
         default_is_cloud = bool(getattr(default_cls, "is_cloud", False))
         try:

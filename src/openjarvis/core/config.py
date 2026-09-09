@@ -619,6 +619,11 @@ class IntelligenceConfig:
     quantization: str = "none"  # none, fp8, int8, int4, gguf_q4, gguf_q8
     preferred_engine: str = ""  # Override engine for this model (e.g., "vllm")
     provider: str = ""  # local, openai, anthropic, google
+    # Hard gate on any cloud engine (OpenAI/Anthropic/Google/OpenRouter/...).
+    # False means no cloud engine is ever built, discovered as a fallback, or
+    # hot-reloaded via /v1/cloud/reload — regardless of API keys present in
+    # the environment or submitted through the API.
+    allow_cloud: bool = False
     # Generation defaults (overridable per-call)
     temperature: float = 0.7
     max_tokens: int = 1024

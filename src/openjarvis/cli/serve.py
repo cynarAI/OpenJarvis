@@ -212,7 +212,12 @@ def serve(
         or os.environ.get("GOOGLE_API_KEY")
         or os.environ.get("OPENROUTER_API_KEY")
     )
-    if _has_cloud and engine_name != "cloud":
+    if _has_cloud and not config.intelligence.allow_cloud:
+        console.print(
+            "  Cloud:  [yellow]disabled[/yellow] (API keys detected but "
+            "intelligence.allow_cloud is false)"
+        )
+    if _has_cloud and config.intelligence.allow_cloud and engine_name != "cloud":
         try:
             from openjarvis.engine.cloud import CloudEngine
 
