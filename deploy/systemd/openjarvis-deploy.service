@@ -1,0 +1,8 @@
+[Unit]
+Description=OpenJarvis auto-deploy from origin/main
+[Service]
+Type=oneshot
+User=cynar
+Environment=PATH=/home/cynar/.local/bin:/usr/local/bin:/usr/bin:/bin
+Environment=OPENJARVIS_DEPLOY_LOG=/tmp/openjarvis-deploy.log
+ExecStart=/usr/bin/bash /srv/openjarvis/scripts/deploy-local.sh

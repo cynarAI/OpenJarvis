@@ -1,0 +1,7 @@
+[Unit]
+Description=OpenJarvis auto-deploy every 2 minutes
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=2min
+[Install]
+WantedBy=timers.target
