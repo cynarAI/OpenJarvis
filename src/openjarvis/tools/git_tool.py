@@ -330,6 +330,84 @@ class GitCommitTool(BaseTool):
 
 
 # ---------------------------------------------------------------------------
+# GitPushTool
+# ---------------------------------------------------------------------------
+
+
+@ToolRegistry.register("git_push")
+class GitPushTool(BaseTool):
+    """Push committed changes to a remote. Never force-pushes."""
+
+    tool_id = "git_push"
+
+    @property
+    def spec(self) -> ToolSpec:
+        return ToolSpec(
+            name="git_push",
+            description=(
+                "Push committed changes to a remote repository."
+                " Defaults to the current branch and 'origin'."
+                " Force-push is not supported by this tool."
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "repo_path": {
+                        "type": "string",
+                        "description": (
+                            "Path to the git repository. Default: current directory."
+                        ),
+                    },
+                    "remote": {
+                        "type": "string",
+                        "description": "Remote name. Default: \"origin\".",
+                    },
+                    "branch": {
+                        "type": "string",
+                        "description": (
+                            "Branch to push. Default: the current branch."
+                        ),
+                    },
+                },
+                "required": [],
+            },
+            category="vcs",
+            required_capabilities=["file:write", "network:fetch"],
+            requires_confirmation=True,
+        )
+
+    def execute(self, **params: Any) -> ToolResult:
+        repo_path = params.get("repo_path", ".")
+        remote = params.get("remote") or "origin"
+        branch = params.get("branch")
+
+        if not branch:
+            current = _run_git(
+                ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+                cwd=repo_path,
+            )
+            if not current.success:
+                return ToolResult(
+                    tool_name="git_push",
+                    content=f"Could not determine current branch: {current.content}",
+                    success=False,
+                    metadata=current.metadata,
+                )
+            branch = current.content.strip()
+            if not branch or branch == "HEAD":
+                return ToolResult(
+                    tool_name="git_push",
+                    content="Not on a branch (detached HEAD); specify 'branch' explicitly.",
+                    success=False,
+                )
+
+        return _run_git(
+            ["git", "push", remote, f"{branch}:{branch}"],
+            cwd=repo_path,
+        )
+
+
+# ---------------------------------------------------------------------------
 # GitLogTool
 # ---------------------------------------------------------------------------
 
@@ -396,4 +474,10 @@ class GitLogTool(BaseTool):
         return _run_git(cmd, cwd=repo_path)
 
 
-__all__ = ["GitStatusTool", "GitDiffTool", "GitCommitTool", "GitLogTool"]
+__all__ = [
+    "GitStatusTool",
+    "GitDiffTool",
+    "GitCommitTool",
+    "GitPushTool",
+    "GitLogTool",
+]

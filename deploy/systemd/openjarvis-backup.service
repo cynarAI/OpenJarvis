@@ -1,0 +1,7 @@
+[Unit]
+Description=OpenJarvis runtime-state + repo backup
+[Service]
+Type=oneshot
+User=cynar
+Environment=PATH=/home/cynar/.local/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=/usr/bin/bash /srv/openjarvis/scripts/backup-local.sh

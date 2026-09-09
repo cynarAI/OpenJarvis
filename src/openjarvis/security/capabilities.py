@@ -245,6 +245,7 @@ DEFAULT_TOOL_CAPABILITIES: Dict[str, List[str]] = {
     "git_commit": [Capability.FILE_WRITE],
     "git_diff": [Capability.FILE_READ],
     "git_log": [Capability.FILE_READ],
+    "git_push": [Capability.FILE_WRITE, Capability.NETWORK_FETCH],
     "git_status": [Capability.FILE_READ],
     "http_request": [Capability.NETWORK_FETCH],
     "image_generate": [Capability.NETWORK_FETCH, Capability.FILE_WRITE],
