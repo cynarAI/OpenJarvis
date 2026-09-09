@@ -15,6 +15,7 @@ from openjarvis.tools.git_tool import (
     GitCommitTool,
     GitDiffTool,
     GitLogTool,
+    GitPushTool,
     GitStatusTool,
 )
 
@@ -432,6 +433,137 @@ class TestGitCommitTool:
     def test_message_required_in_spec(self):
         tool = GitCommitTool()
         assert "message" in tool.spec.parameters["required"]
+
+
+# ---------------------------------------------------------------------------
+# TestGitPushTool
+# ---------------------------------------------------------------------------
+
+
+def _add_bare_remote(repo_path, remote_dir, name="origin"):
+    """Create a bare repo at *remote_dir* and register it as *name* on *repo_path*."""
+    remote_dir.mkdir(parents=True, exist_ok=True)
+    subprocess.run(
+        ["git", "init", "--bare"],
+        cwd=str(remote_dir),
+        capture_output=True,
+        check=True,
+    )
+    subprocess.run(
+        ["git", "remote", "add", name, str(remote_dir)],
+        cwd=str(repo_path),
+        capture_output=True,
+        check=True,
+    )
+
+
+class TestGitPushTool:
+    def test_spec(self):
+        tool = GitPushTool()
+        assert tool.spec.name == "git_push"
+        assert tool.spec.category == "vcs"
+        assert "file:write" in tool.spec.required_capabilities
+        assert tool.spec.requires_confirmation is True
+
+    def test_tool_id(self):
+        tool = GitPushTool()
+        assert tool.tool_id == "git_push"
+
+    def test_push_default_remote_and_branch(self, tmp_path):
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        remote = tmp_path / "remote.git"
+        _init_repo(repo)
+        _add_bare_remote(repo, remote)
+
+        result = GitPushTool().execute(repo_path=str(repo))
+        assert result.success is True
+
+        log = subprocess.run(
+            ["git", "log", "--oneline", "-1"],
+            cwd=str(remote),
+            capture_output=True,
+            text=True,
+        )
+        assert "Initial commit" in log.stdout
+
+    def test_push_explicit_remote_and_branch(self, tmp_path):
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        remote = tmp_path / "remote.git"
+        _init_repo(repo)
+        _add_bare_remote(repo, remote, name="upstream")
+
+        result = GitPushTool().execute(
+            repo_path=str(repo), remote="upstream", branch="main"
+        )
+        assert result.success is True
+
+    def test_rejects_unconfigured_remote(self, tmp_path):
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        _init_repo(repo)
+
+        result = GitPushTool().execute(repo_path=str(repo), remote="origin")
+        assert result.success is False
+        assert "Unknown remote" in result.content
+
+    def test_rejects_ext_transport_as_remote(self, tmp_path):
+        """A remote value must be a pre-configured name, never a raw URL/transport
+        string — otherwise a model-supplied ``ext::sh -c ...`` would let git itself
+        execute an arbitrary command via the ext transport helper."""
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        _init_repo(repo)
+
+        result = GitPushTool().execute(
+            repo_path=str(repo), remote="ext::sh -c touch /tmp/pwned"
+        )
+        assert result.success is False
+        assert "Unknown remote" in result.content
+        assert not (tmp_path / "pwned").exists()
+
+    def test_rejects_flag_like_remote(self, tmp_path):
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        _init_repo(repo)
+
+        result = GitPushTool().execute(repo_path=str(repo), remote="--upload-pack=id")
+        assert result.success is False
+        assert "Unknown remote" in result.content
+
+    def test_rejects_invalid_branch_name(self, tmp_path):
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        remote = tmp_path / "remote.git"
+        _init_repo(repo)
+        _add_bare_remote(repo, remote)
+
+        result = GitPushTool().execute(
+            repo_path=str(repo), branch="ext::sh -c id"
+        )
+        assert result.success is False
+        assert "Invalid branch name" in result.content
+
+    def test_rejects_flag_like_branch(self, tmp_path):
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        remote = tmp_path / "remote.git"
+        _init_repo(repo)
+        _add_bare_remote(repo, remote)
+
+        result = GitPushTool().execute(repo_path=str(repo), branch="--force")
+        assert result.success is False
+        assert "Invalid branch name" in result.content
+
+    def test_no_remotes_configured(self, tmp_path):
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        _init_repo(repo)
+
+        result = GitPushTool().execute(repo_path=str(repo))
+        assert result.success is False
+        assert "Unknown remote" in result.content
 
 
 # ---------------------------------------------------------------------------
