@@ -311,7 +311,7 @@ class GitCommitTool(BaseTool):
                     success=False,
                 )
             add_result = _run_git(
-                ["git", "add"] + file_list,
+                ["git", "add", "--"] + file_list,
                 cwd=repo_path,
             )
             if not add_result.success:
@@ -381,6 +381,31 @@ class GitPushTool(BaseTool):
         remote = params.get("remote") or "origin"
         branch = params.get("branch")
 
+        # `remote` and `branch` are model-supplied strings that end up as
+        # git argv. Never pass a raw remote through to git: a value like
+        # "ext::sh -c ..." or "--upload-pack=..." is parsed by git itself
+        # (not the shell) and can execute arbitrary commands or exfiltrate
+        # via a bogus transport, regardless of subprocess quoting. Instead
+        # only allow remotes that are already configured on this repo.
+        known_remotes = _run_git(["git", "remote"], cwd=repo_path)
+        if not known_remotes.success:
+            return ToolResult(
+                tool_name="git_push",
+                content=f"Could not list configured remotes: {known_remotes.content}",
+                success=False,
+                metadata=known_remotes.metadata,
+            )
+        valid_remotes = {line.strip() for line in known_remotes.content.splitlines() if line.strip()}
+        if remote not in valid_remotes:
+            return ToolResult(
+                tool_name="git_push",
+                content=(
+                    f"Unknown remote {remote!r}. Must be one of the repository's"
+                    f" already-configured remotes: {sorted(valid_remotes) or '(none)'}."
+                ),
+                success=False,
+            )
+
         if not branch:
             current = _run_git(
                 ["git", "rev-parse", "--abbrev-ref", "HEAD"],
@@ -401,8 +426,20 @@ class GitPushTool(BaseTool):
                     success=False,
                 )
 
+        # git rejects most shell-metacharacter tricks in ref names already,
+        # but validate explicitly so a malformed/hostile branch string never
+        # reaches argv as something git could parse as an option or as two
+        # refspecs (e.g. embedded whitespace, a leading '-', or a ':').
+        ref_check = _run_git(["git", "check-ref-format", "--branch", branch], cwd=repo_path)
+        if not ref_check.success or branch.startswith("-"):
+            return ToolResult(
+                tool_name="git_push",
+                content=f"Invalid branch name: {branch!r}",
+                success=False,
+            )
+
         return _run_git(
-            ["git", "push", remote, f"{branch}:{branch}"],
+            ["git", "push", "--", remote, f"{branch}:{branch}"],
             cwd=repo_path,
         )
 
