@@ -1666,7 +1666,7 @@ def create_agent_manager_router(
         return agent
 
     @agents_router.patch("/{agent_id}")
-    async def update_agent(agent_id: str, req: UpdateAgentRequest):
+    async def update_agent(agent_id: str, req: UpdateAgentRequest, request: Request):
         if not manager.get_agent(agent_id):
             raise HTTPException(status_code=404, detail="Agent not found")
         kwargs: Dict[str, Any] = {}
@@ -1676,7 +1676,19 @@ def create_agent_manager_router(
             kwargs["agent_type"] = req.agent_type
         if req.config is not None:
             kwargs["config"] = req.config
-        return manager.update_agent(agent_id, **kwargs)
+        updated = manager.update_agent(agent_id, **kwargs)
+
+        # Re-register with the live scheduler so a schedule_type/schedule_value
+        # change in `config` takes effect immediately instead of silently
+        # requiring a full server restart (create_agent already did this;
+        # update_agent never did, so editing an existing agent's schedule
+        # through the UI/API had no effect until the next restart).
+        if req.config is not None:
+            scheduler = getattr(request.app.state, "agent_scheduler", None)
+            if scheduler is not None:
+                scheduler.register_agent(agent_id)
+
+        return updated
 
     @agents_router.delete("/{agent_id}")
     async def delete_agent(agent_id: str):
