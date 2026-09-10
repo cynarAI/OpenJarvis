@@ -852,16 +852,32 @@ class AgentExecutor:
                     tool_calls=_tool_calls_for_storage(result),
                 )
 
-            # Budget enforcement (post-tick check)
+            # Budget enforcement (post-tick check). Deliberately reads
+            # max_total_tokens, NOT max_tokens: the latter is the per-completion
+            # LLM sampling cap (config.get("max_tokens", 1024) in
+            # agent_manager_routes.py, passed to every chat completion), while
+            # this is a lifetime cumulative cap across all ticks that never
+            # resets. Reusing the same key meant every agent created with a
+            # normal-looking sampling default (e.g. max_tokens=4096, inherited
+            # from a template) permanently self-destructed the first time its
+            # running total of tokens-across-all-ticks -- not tokens-per-call
+            # -- crossed that number, usually within one or two ticks, with no
+            # automatic recovery (the scheduler skips "budget_exceeded" agents
+            # forever). Found live: a freshly scheduled agent with
+            # max_tokens=4096 hit budget_exceeded after a single 15k-token
+            # tick that did no actual work beyond checking a task queue.
             agent_data = self._manager.get_agent(agent_id)
             if agent_data:
                 config = agent_data.get("config", {})
                 max_cost = config.get("max_cost", 0)
-                max_tokens = config.get("max_tokens", 0)
+                max_total_tokens = config.get("max_total_tokens", 0)
                 exceeded = False
                 if max_cost > 0 and agent_data["total_cost"] > max_cost:
                     exceeded = True
-                if max_tokens > 0 and agent_data["total_tokens"] > max_tokens:
+                if (
+                    max_total_tokens > 0
+                    and agent_data["total_tokens"] > max_total_tokens
+                ):
                     exceeded = True
                 if exceeded:
                     self._manager.update_agent(agent_id, status="budget_exceeded")
@@ -872,7 +888,7 @@ class AgentExecutor:
                             "total_cost": agent_data["total_cost"],
                             "total_tokens": agent_data["total_tokens"],
                             "max_cost": max_cost,
-                            "max_tokens": max_tokens,
+                            "max_total_tokens": max_total_tokens,
                         },
                     )
             self._bus.publish(
