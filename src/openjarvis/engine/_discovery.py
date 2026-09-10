@@ -209,7 +209,9 @@ def get_engine(
         if not EngineRegistry.contains(engine_key):
             logger.warning("Requested engine %r is not registered", engine_key)
             return None
-        if not allow_cloud and getattr(EngineRegistry.get(engine_key), "is_cloud", False):
+        if not allow_cloud and getattr(
+            EngineRegistry.get(engine_key), "is_cloud", False
+        ):
             logger.warning(
                 "Requested engine %r is a cloud engine but intelligence.allow_cloud "
                 "is false; refusing",
@@ -234,7 +236,10 @@ def get_engine(
     if (
         default_key
         and EngineRegistry.contains(default_key)
-        and (allow_cloud or not getattr(EngineRegistry.get(default_key), "is_cloud", False))
+        and (
+            allow_cloud
+            or not getattr(EngineRegistry.get(default_key), "is_cloud", False)
+        )
     ):
         default_cls = EngineRegistry.get(default_key)
         default_is_cloud = bool(getattr(default_cls, "is_cloud", False))
