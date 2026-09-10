@@ -205,6 +205,50 @@ class TestImageGenerateToolLocal:
         assert result.success is True
         assert result.content.startswith("![a scary cat]")
 
+    def test_output_path_traversal_is_contained_to_media_dir(
+        self, monkeypatch, tmp_path
+    ):
+        """A model-supplied output_path must never let the tool write
+        outside _MEDIA_IMAGES_DIR -- only the basename is honored."""
+        self._patch_governor(monkeypatch, tmp_path)
+        escape_target = tmp_path / "escaped.png"
+
+        def _fake_run(args, **kwargs):
+            Path(args[-1]).write_bytes(b"fake")
+            return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+
+        with patch("openjarvis.tools.image_tool.subprocess.run", side_effect=_fake_run):
+            result = ImageGenerateTool().execute(
+                prompt="a cat", output_path="../../../../escaped.png"
+            )
+
+        assert result.success is True
+        assert not escape_target.exists()
+        assert Path(result.metadata["path"]).parent == tmp_path / "images"
+        assert result.metadata["url"] == "/jarvis-media/images/escaped.png"
+
+    def test_output_path_absolute_path_is_contained(self, monkeypatch, tmp_path):
+        """Even a fully-writable absolute path elsewhere on disk must be
+        reduced to just its basename inside the media dir -- output_path
+        is a filename, never a real filesystem destination."""
+        self._patch_governor(monkeypatch, tmp_path)
+        elsewhere = tmp_path / "elsewhere"
+        elsewhere.mkdir()
+        absolute_target = elsewhere / "evil.png"
+
+        def _fake_run(args, **kwargs):
+            Path(args[-1]).write_bytes(b"fake")
+            return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+
+        with patch("openjarvis.tools.image_tool.subprocess.run", side_effect=_fake_run):
+            result = ImageGenerateTool().execute(
+                prompt="a cat", output_path=str(absolute_target)
+            )
+
+        assert result.success is True
+        assert not absolute_target.exists()
+        assert Path(result.metadata["path"]) == tmp_path / "images" / "evil.png"
+
     def test_default_provider_is_local(self, monkeypatch, tmp_path):
         """No `provider` param at all must take the local path, not openai."""
         self._patch_governor(monkeypatch, tmp_path)
@@ -287,6 +331,9 @@ class TestImageGenerateToolOpenAI:
 
     def test_save_to_file(self, monkeypatch, tmp_path):
         monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+        monkeypatch.setattr(
+            "openjarvis.tools.image_tool._MEDIA_IMAGES_DIR", tmp_path / "images"
+        )
         mock_image_data = MagicMock()
         mock_image_data.url = "https://example.com/image.png"
 
@@ -308,16 +355,52 @@ class TestImageGenerateToolOpenAI:
         mock_http_resp.raise_for_status = MagicMock()
         monkeypatch.setattr(httpx, "get", MagicMock(return_value=mock_http_resp))
 
-        output_file = tmp_path / "output.png"
         tool = ImageGenerateTool()
         result = tool.execute(
             prompt="a cat",
             provider="openai",
-            output_path=str(output_file),
+            output_path="output.png",
         )
         assert result.success is True
-        assert output_file.exists()
-        assert output_file.read_bytes() == b"\x89PNG\r\n\x1a\nfake-image-data"
+        saved = tmp_path / "images" / "output.png"
+        assert saved.exists()
+        assert saved.read_bytes() == b"\x89PNG\r\n\x1a\nfake-image-data"
+
+    def test_save_to_file_contains_traversal_to_media_dir(self, monkeypatch, tmp_path):
+        """The openai provider's save-to-file path shares the same
+        containment as the local provider -- output_path is a filename,
+        never an arbitrary filesystem destination."""
+        monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+        monkeypatch.setattr(
+            "openjarvis.tools.image_tool._MEDIA_IMAGES_DIR", tmp_path / "images"
+        )
+        mock_image_data = MagicMock()
+        mock_image_data.url = "https://example.com/image.png"
+        mock_response = MagicMock()
+        mock_response.data = [mock_image_data]
+        mock_client = MagicMock()
+        mock_client.images.generate.return_value = mock_response
+        mock_openai = MagicMock()
+        mock_openai.OpenAI.return_value = mock_client
+        monkeypatch.setitem(sys.modules, "openai", mock_openai)
+
+        import httpx
+
+        mock_http_resp = MagicMock()
+        mock_http_resp.content = b"payload"
+        mock_http_resp.raise_for_status = MagicMock()
+        monkeypatch.setattr(httpx, "get", MagicMock(return_value=mock_http_resp))
+
+        escape_target = tmp_path / "escaped.png"
+        tool = ImageGenerateTool()
+        result = tool.execute(
+            prompt="a cat",
+            provider="openai",
+            output_path="../escaped.png",
+        )
+        assert result.success is True
+        assert not escape_target.exists()
+        assert (tmp_path / "images" / "escaped.png").exists()
 
     def test_api_error(self, monkeypatch):
         monkeypatch.setenv("OPENAI_API_KEY", "test-key")

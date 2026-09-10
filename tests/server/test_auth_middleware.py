@@ -32,6 +32,10 @@ def _make_app(api_key: str) -> FastAPI:
     async def metrics():
         return {"requests": 0}
 
+    @app.get("/jarvis-media/images/test.png")
+    async def jarvis_media():
+        return {"served": True}
+
     return app
 
 
@@ -75,6 +79,20 @@ class TestAuthMiddleware:
 
     def test_metrics_accepts_valid_key(self, client):
         resp = client.get("/metrics", headers={"Authorization": "Bearer oj_sk_test123"})
+        assert resp.status_code == 200
+
+    def test_jarvis_media_requires_auth(self, client):
+        """Generated images/videos are user-specific content, not the app's
+        static bundle -- must not be browsable by anyone who can reach the
+        host without the API key."""
+        resp = client.get("/jarvis-media/images/test.png")
+        assert resp.status_code == 401
+
+    def test_jarvis_media_accepts_valid_key(self, client):
+        resp = client.get(
+            "/jarvis-media/images/test.png",
+            headers={"Authorization": "Bearer oj_sk_test123"},
+        )
         assert resp.status_code == 200
 
     def test_no_key_configured_allows_all(self):
