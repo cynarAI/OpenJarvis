@@ -248,7 +248,11 @@ DEFAULT_TOOL_CAPABILITIES: Dict[str, List[str]] = {
     "git_push": [Capability.FILE_WRITE, Capability.NETWORK_FETCH],
     "git_status": [Capability.FILE_READ],
     "http_request": [Capability.NETWORK_FETCH],
-    "image_generate": [Capability.NETWORK_FETCH, Capability.FILE_WRITE],
+    "image_generate": [
+        Capability.NETWORK_FETCH,
+        Capability.FILE_WRITE,
+        Capability.CODE_EXECUTE,
+    ],
     "kg_add_entity": [Capability.MEMORY_WRITE],
     "kg_add_relation": [Capability.MEMORY_WRITE],
     "kg_neighbors": [Capability.MEMORY_READ],
@@ -262,6 +266,7 @@ DEFAULT_TOOL_CAPABILITIES: Dict[str, List[str]] = {
     "memory_retrieve": [Capability.MEMORY_READ],
     "memory_search": [Capability.MEMORY_READ],
     "memory_store": [Capability.MEMORY_WRITE],
+    "network_devices": [Capability.NETWORK_FETCH],
     "pause_scheduled_task": [Capability.SCHEDULE_CREATE],
     "pdf_extract": [Capability.FILE_READ],
     "queue_action": [Capability.MEMORY_WRITE],
@@ -276,6 +281,7 @@ DEFAULT_TOOL_CAPABILITIES: Dict[str, List[str]] = {
     "text_to_speech": [Capability.NETWORK_FETCH, Capability.FILE_WRITE],
     "think": [],
     "user_profile_manage": [Capability.FILE_READ, Capability.FILE_WRITE],
+    "video_generate": [Capability.CODE_EXECUTE, Capability.FILE_WRITE],
     "web_search": [Capability.NETWORK_FETCH],
 }
 

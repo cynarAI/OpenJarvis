@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback } from 'react';
 import type React from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { LEADERBOARD_ENABLED, SUPABASE_ANON_KEY, SUPABASE_URL } from '../../lib/supabase';
+import { randomUUID } from '../../lib/uuid';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -275,7 +276,7 @@ const OPTIN_ANONID_KEY = 'openjarvis-desktop-anon-id';
 function getOrCreateAnonId(): string {
   const stored = localStorage.getItem(OPTIN_ANONID_KEY);
   if (stored) return stored;
-  const id = crypto.randomUUID();
+  const id = randomUUID();
   localStorage.setItem(OPTIN_ANONID_KEY, id);
   return id;
 }

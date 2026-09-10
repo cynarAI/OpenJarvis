@@ -360,13 +360,11 @@ class GitPushTool(BaseTool):
                     },
                     "remote": {
                         "type": "string",
-                        "description": "Remote name. Default: \"origin\".",
+                        "description": 'Remote name. Default: "origin".',
                     },
                     "branch": {
                         "type": "string",
-                        "description": (
-                            "Branch to push. Default: the current branch."
-                        ),
+                        "description": ("Branch to push. Default: the current branch."),
                     },
                 },
                 "required": [],
@@ -395,7 +393,9 @@ class GitPushTool(BaseTool):
                 success=False,
                 metadata=known_remotes.metadata,
             )
-        valid_remotes = {line.strip() for line in known_remotes.content.splitlines() if line.strip()}
+        valid_remotes = {
+            line.strip() for line in known_remotes.content.splitlines() if line.strip()
+        }
         if remote not in valid_remotes:
             return ToolResult(
                 tool_name="git_push",
@@ -422,7 +422,9 @@ class GitPushTool(BaseTool):
             if not branch or branch == "HEAD":
                 return ToolResult(
                     tool_name="git_push",
-                    content="Not on a branch (detached HEAD); specify 'branch' explicitly.",
+                    content=(
+                        "Not on a branch (detached HEAD); specify 'branch' explicitly."
+                    ),
                     success=False,
                 )
 
@@ -430,7 +432,9 @@ class GitPushTool(BaseTool):
         # but validate explicitly so a malformed/hostile branch string never
         # reaches argv as something git could parse as an option or as two
         # refspecs (e.g. embedded whitespace, a leading '-', or a ':').
-        ref_check = _run_git(["git", "check-ref-format", "--branch", branch], cwd=repo_path)
+        ref_check = _run_git(
+            ["git", "check-ref-format", "--branch", branch], cwd=repo_path
+        )
         if not ref_check.success or branch.startswith("-"):
             return ToolResult(
                 tool_name="git_push",

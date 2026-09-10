@@ -1,26 +1,43 @@
-"""Tests for the image_generate tool."""
+"""Tests for the image_generate tool.
+
+The tool defaults to a local diffusion model (Qwen-Image, invoked via a
+governor shell script through ``subprocess.run``) and falls back to OpenAI
+DALL-E when ``provider="openai"`` is passed explicitly. Local-path tests
+mock ``subprocess.run`` so the suite never shells out to the real,
+multi-minute governor script.
+"""
 
 from __future__ import annotations
 
 import builtins
+import subprocess
 import sys
-from unittest.mock import MagicMock
+from pathlib import Path
+from unittest.mock import MagicMock, patch
 
 from openjarvis.tools.image_tool import ImageGenerateTool
 
+# ---------------------------------------------------------------------------
+# Spec / dispatch
+# ---------------------------------------------------------------------------
 
-class TestImageGenerateTool:
+
+class TestImageGenerateToolSpec:
     def test_spec(self):
         tool = ImageGenerateTool()
         assert tool.spec.name == "image_generate"
         assert tool.spec.category == "media"
         assert "prompt" in tool.spec.parameters["properties"]
         assert "prompt" in tool.spec.parameters["required"]
-        assert tool.spec.required_capabilities == ["network:fetch"]
 
     def test_tool_id(self):
         tool = ImageGenerateTool()
         assert tool.tool_id == "image_generate"
+
+    def test_is_local(self):
+        # The local (default) provider never leaves the host; the openai
+        # provider does, but is opt-in via an explicit `provider` param.
+        assert ImageGenerateTool().is_local is True
 
     def test_no_prompt(self):
         tool = ImageGenerateTool()
@@ -34,17 +51,189 @@ class TestImageGenerateTool:
         assert result.success is False
         assert "No prompt" in result.content
 
-    def test_invalid_size(self):
-        tool = ImageGenerateTool()
-        result = tool.execute(prompt="a cat", size="999x999")
-        assert result.success is False
-        assert "Invalid size" in result.content
-
     def test_unsupported_provider(self):
         tool = ImageGenerateTool()
         result = tool.execute(prompt="a cat", provider="midjourney")
         assert result.success is False
         assert "Unsupported provider" in result.content
+
+    def test_to_openai_function(self):
+        tool = ImageGenerateTool()
+        fn = tool.to_openai_function()
+        assert fn["type"] == "function"
+        assert fn["function"]["name"] == "image_generate"
+
+
+# ---------------------------------------------------------------------------
+# Local provider (default) — subprocess.run is always mocked
+# ---------------------------------------------------------------------------
+
+
+class TestImageGenerateToolLocal:
+    def _patch_governor(self, monkeypatch, tmp_path, exists: bool = True):
+        governor = tmp_path / "governor.sh"
+        if exists:
+            governor.write_text("#!/bin/sh\n")
+            governor.chmod(0o755)
+        monkeypatch.setattr(
+            "openjarvis.tools.image_tool._LOCAL_GOVERNOR", str(governor)
+        )
+        monkeypatch.setattr(
+            "openjarvis.tools.image_tool._MEDIA_IMAGES_DIR", tmp_path / "images"
+        )
+        return governor
+
+    def test_governor_missing(self, monkeypatch, tmp_path):
+        self._patch_governor(monkeypatch, tmp_path, exists=False)
+        result = ImageGenerateTool().execute(prompt="a cat")
+        assert result.success is False
+        assert "not set up" in result.content
+
+    def test_successful_generation(self, monkeypatch, tmp_path):
+        self._patch_governor(monkeypatch, tmp_path)
+
+        def _fake_run(args, **kwargs):
+            Path(args[-1]).write_bytes(b"\x89PNG fake")
+            return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+
+        with patch("openjarvis.tools.image_tool.subprocess.run", side_effect=_fake_run):
+            result = ImageGenerateTool().execute(prompt="a cat on a mat")
+
+        assert result.success is True
+        assert result.content.startswith("![a cat on a mat](/jarvis-media/images/")
+        assert result.metadata["provider"] == "local"
+        assert result.metadata["size"] == "1024x1024"
+        assert result.metadata["url"].startswith("/jarvis-media/images/")
+        assert Path(result.metadata["path"]).exists()
+
+    def test_invalid_size_falls_back_to_default(self, monkeypatch, tmp_path):
+        self._patch_governor(monkeypatch, tmp_path)
+        captured: dict[str, str] = {}
+
+        def _fake_run(args, **kwargs):
+            captured["size"] = args[2]
+            Path(args[-1]).write_bytes(b"fake")
+            return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+
+        with patch("openjarvis.tools.image_tool.subprocess.run", side_effect=_fake_run):
+            result = ImageGenerateTool().execute(prompt="a cat", size="not-a-size")
+
+        assert result.success is True
+        assert captured["size"] == "1024x1024"
+        assert result.metadata["size"] == "1024x1024"
+
+    def test_custom_size_passed_through(self, monkeypatch, tmp_path):
+        self._patch_governor(monkeypatch, tmp_path)
+        captured: dict[str, str] = {}
+
+        def _fake_run(args, **kwargs):
+            captured["size"] = args[2]
+            Path(args[-1]).write_bytes(b"fake")
+            return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+
+        with patch("openjarvis.tools.image_tool.subprocess.run", side_effect=_fake_run):
+            result = ImageGenerateTool().execute(prompt="a cat", size="1024x576")
+
+        assert result.success is True
+        assert captured["size"] == "1024x576"
+
+    def test_timeout(self, monkeypatch, tmp_path):
+        self._patch_governor(monkeypatch, tmp_path)
+
+        with patch(
+            "openjarvis.tools.image_tool.subprocess.run",
+            side_effect=subprocess.TimeoutExpired(cmd="governor", timeout=900),
+        ):
+            result = ImageGenerateTool().execute(prompt="a cat")
+
+        assert result.success is False
+        assert "timed out" in result.content
+
+    def test_subprocess_raises(self, monkeypatch, tmp_path):
+        self._patch_governor(monkeypatch, tmp_path)
+
+        with patch(
+            "openjarvis.tools.image_tool.subprocess.run",
+            side_effect=OSError("no such device"),
+        ):
+            result = ImageGenerateTool().execute(prompt="a cat")
+
+        assert result.success is False
+        assert "Failed to run local image generation" in result.content
+
+    def test_nonzero_exit_surfaces_log_tail(self, monkeypatch, tmp_path):
+        self._patch_governor(monkeypatch, tmp_path)
+
+        def _fake_run(args, **kwargs):
+            # Nonzero exit and no output file written.
+            return subprocess.CompletedProcess(
+                args,
+                1,
+                stdout="loading model\nallocating\nerror: out of memory",
+                stderr="",
+            )
+
+        with patch("openjarvis.tools.image_tool.subprocess.run", side_effect=_fake_run):
+            result = ImageGenerateTool().execute(prompt="a cat")
+
+        assert result.success is False
+        assert "exit 1" in result.content
+        assert "out of memory" in result.content
+
+    def test_zero_exit_but_no_output_file_is_a_failure(self, monkeypatch, tmp_path):
+        self._patch_governor(monkeypatch, tmp_path)
+
+        def _fake_run(args, **kwargs):
+            # Exit 0 but the governor didn't actually produce a file.
+            return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+
+        with patch("openjarvis.tools.image_tool.subprocess.run", side_effect=_fake_run):
+            result = ImageGenerateTool().execute(prompt="a cat")
+
+        assert result.success is False
+
+    def test_alt_text_strips_markdown_brackets(self, monkeypatch, tmp_path):
+        self._patch_governor(monkeypatch, tmp_path)
+
+        def _fake_run(args, **kwargs):
+            Path(args[-1]).write_bytes(b"fake")
+            return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+
+        with patch("openjarvis.tools.image_tool.subprocess.run", side_effect=_fake_run):
+            result = ImageGenerateTool().execute(prompt="a [scary] cat")
+
+        assert result.success is True
+        assert result.content.startswith("![a scary cat]")
+
+    def test_default_provider_is_local(self, monkeypatch, tmp_path):
+        """No `provider` param at all must take the local path, not openai."""
+        self._patch_governor(monkeypatch, tmp_path)
+
+        def _fake_run(args, **kwargs):
+            Path(args[-1]).write_bytes(b"fake")
+            return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+
+        with patch(
+            "openjarvis.tools.image_tool.subprocess.run", side_effect=_fake_run
+        ) as mock_run:
+            result = ImageGenerateTool().execute(prompt="a cat")
+
+        assert result.success is True
+        assert result.metadata["provider"] == "local"
+        mock_run.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# OpenAI provider — opt-in via provider="openai"
+# ---------------------------------------------------------------------------
+
+
+class TestImageGenerateToolOpenAI:
+    def test_invalid_size(self):
+        tool = ImageGenerateTool()
+        result = tool.execute(prompt="a cat", size="999x999", provider="openai")
+        assert result.success is False
+        assert "Invalid size" in result.content
 
     def test_openai_not_installed(self, monkeypatch):
         """Simulate openai package not being installed."""
@@ -59,7 +248,7 @@ class TestImageGenerateTool:
         monkeypatch.setattr(builtins, "__import__", _mock_import)
 
         tool = ImageGenerateTool()
-        result = tool.execute(prompt="a cat")
+        result = tool.execute(prompt="a cat", provider="openai")
         assert result.success is False
         assert "openai package not installed" in result.content
 
@@ -69,7 +258,7 @@ class TestImageGenerateTool:
         monkeypatch.setitem(sys.modules, "openai", mock_openai)
 
         tool = ImageGenerateTool()
-        result = tool.execute(prompt="a cat")
+        result = tool.execute(prompt="a cat", provider="openai")
         assert result.success is False
         assert "No API key" in result.content
 
@@ -89,7 +278,7 @@ class TestImageGenerateTool:
         monkeypatch.setitem(sys.modules, "openai", mock_openai)
 
         tool = ImageGenerateTool()
-        result = tool.execute(prompt="a cat on a mat")
+        result = tool.execute(prompt="a cat on a mat", provider="openai")
         assert result.success is True
         assert result.content == "https://example.com/image.png"
         assert result.metadata["url"] == "https://example.com/image.png"
@@ -123,6 +312,7 @@ class TestImageGenerateTool:
         tool = ImageGenerateTool()
         result = tool.execute(
             prompt="a cat",
+            provider="openai",
             output_path=str(output_file),
         )
         assert result.success is True
@@ -139,12 +329,6 @@ class TestImageGenerateTool:
         monkeypatch.setitem(sys.modules, "openai", mock_openai)
 
         tool = ImageGenerateTool()
-        result = tool.execute(prompt="a cat")
+        result = tool.execute(prompt="a cat", provider="openai")
         assert result.success is False
         assert "Image generation error" in result.content
-
-    def test_to_openai_function(self):
-        tool = ImageGenerateTool()
-        fn = tool.to_openai_function()
-        assert fn["type"] == "function"
-        assert fn["function"]["name"] == "image_generate"

@@ -146,6 +146,47 @@ class TestAgentManagerRoutes:
         assert resp.status_code == 200
         assert resp.json()["name"] == "new"
 
+    def test_update_agent_config_reregisters_with_live_scheduler(self, client):
+        """A schedule_type/schedule_value change via PATCH must take effect
+        immediately — previously only POST (create_agent) called
+        scheduler.register_agent(), so editing an existing agent's schedule
+        through the UI/API silently required a full server restart."""
+        create_resp = client.post("/v1/managed-agents", json={"name": "schedulable"})
+        agent_id = create_resp.json()["id"]
+
+        mock_scheduler = MagicMock()
+        client.app.state.agent_scheduler = mock_scheduler
+
+        resp = client.patch(
+            f"/v1/managed-agents/{agent_id}",
+            json={"config": {"schedule_type": "interval", "schedule_value": 3600}},
+        )
+        assert resp.status_code == 200
+        mock_scheduler.register_agent.assert_called_once_with(agent_id)
+
+    def test_update_agent_without_config_does_not_touch_scheduler(self, client):
+        create_resp = client.post("/v1/managed-agents", json={"name": "renameable"})
+        agent_id = create_resp.json()["id"]
+
+        mock_scheduler = MagicMock()
+        client.app.state.agent_scheduler = mock_scheduler
+
+        resp = client.patch(f"/v1/managed-agents/{agent_id}", json={"name": "renamed"})
+        assert resp.status_code == 200
+        mock_scheduler.register_agent.assert_not_called()
+
+    def test_update_agent_without_live_scheduler_still_succeeds(self, client):
+        """No app.state.agent_scheduler configured (e.g. agent_manager
+        disabled) must not turn a config PATCH into a 500."""
+        create_resp = client.post("/v1/managed-agents", json={"name": "no-scheduler"})
+        agent_id = create_resp.json()["id"]
+
+        resp = client.patch(
+            f"/v1/managed-agents/{agent_id}",
+            json={"config": {"schedule_type": "manual"}},
+        )
+        assert resp.status_code == 200
+
     def test_delete_agent(self, client):
         create_resp = client.post("/v1/managed-agents", json={"name": "doomed"})
         agent_id = create_resp.json()["id"]

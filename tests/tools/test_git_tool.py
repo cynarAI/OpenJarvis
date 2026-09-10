@@ -539,9 +539,7 @@ class TestGitPushTool:
         _init_repo(repo)
         _add_bare_remote(repo, remote)
 
-        result = GitPushTool().execute(
-            repo_path=str(repo), branch="ext::sh -c id"
-        )
+        result = GitPushTool().execute(repo_path=str(repo), branch="ext::sh -c id")
         assert result.success is False
         assert "Invalid branch name" in result.content
 
