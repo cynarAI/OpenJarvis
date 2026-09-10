@@ -1,30 +1,52 @@
-"""Image generation tool — generate images via OpenAI DALL-E."""
+"""Image generation tool -- local Qwen-Image (default) or OpenAI DALL-E."""
 
 from __future__ import annotations
 
 import os
+import re
+import subprocess
+import time
+import uuid
+from pathlib import Path
 from typing import Any
 
 from openjarvis.core.registry import ToolRegistry
 from openjarvis.core.types import ToolResult
 from openjarvis.tools._stubs import BaseTool, ToolSpec
 
-_VALID_SIZES = {"256x256", "512x512", "1024x1024"}
+_SIZE_RE = re.compile(r"^\d{3,4}x\d{3,4}$")
+_LOCAL_GOVERNOR = "/srv/media-gen/bin/media-gen-governor-jarvis-image.sh"
+_MEDIA_IMAGES_DIR = Path("/srv/media-gen/images")
+_LOCAL_TIMEOUT_SECONDS = 900  # Qwen-Image at 40 steps can take several minutes
 
 
 @ToolRegistry.register("image_generate")
 class ImageGenerateTool(BaseTool):
-    """Generate images from text descriptions via OpenAI DALL-E."""
+    """Generate images from text descriptions.
+
+    Default provider is 'local': a full-quality Qwen-Image diffusion model
+    running on-device via stable-diffusion.cpp (see
+    media-gen-governor-jarvis-image.sh) -- much higher fidelity than a
+    turbo/distilled model, at the cost of taking minutes instead of seconds.
+    Provider 'openai' remains available if OPENAI_API_KEY is configured.
+    """
 
     tool_id = "image_generate"
-    is_local = False
+    is_local = True
 
     @property
     def spec(self) -> ToolSpec:
         return ToolSpec(
             name="image_generate",
             description=(
-                "Generate an image from a text description. Returns the image URL."
+                "Generate an image from a text description using a local, "
+                "full-quality diffusion model (Qwen-Image). Takes 2-6 "
+                "minutes to run -- say so if the user is waiting. Returns "
+                "markdown of the form ![alt](/jarvis-media/images/...) -- "
+                "you MUST copy that markdown into your reply to the user "
+                "EXACTLY as returned (do not paraphrase, describe, or omit "
+                "it) so the image actually renders; add at most a short "
+                "sentence before or after it."
             ),
             parameters={
                 "type": "object",
@@ -36,8 +58,9 @@ class ImageGenerateTool(BaseTool):
                     "size": {
                         "type": "string",
                         "description": (
-                            "Image size: '256x256', '512x512', or '1024x1024'."
-                            " Default '1024x1024'."
+                            "Image size as WIDTHxHEIGHT, e.g. '1024x1024', "
+                            "'1024x576' (landscape), '576x1024' (portrait). "
+                            "Default '1024x1024'."
                         ),
                     },
                     "output_path": {
@@ -46,13 +69,16 @@ class ImageGenerateTool(BaseTool):
                     },
                     "provider": {
                         "type": "string",
-                        "description": "Image generation provider. Default 'openai'.",
+                        "description": (
+                            "'local' (default, on-device Qwen-Image) or "
+                            "'openai' (DALL-E, needs OPENAI_API_KEY)."
+                        ),
                     },
                 },
                 "required": ["prompt"],
             },
             category="media",
-            required_capabilities=["network:fetch"],
+            timeout_seconds=950,
         )
 
     def execute(self, **params: Any) -> ToolResult:
@@ -64,25 +90,106 @@ class ImageGenerateTool(BaseTool):
                 success=False,
             )
 
+        provider = params.get("provider") or "local"
         size = params.get("size", "1024x1024")
-        if size not in _VALID_SIZES:
+
+        if provider == "local":
+            return self._execute_local(prompt, size, params.get("output_path"))
+        if provider == "openai":
+            return self._execute_openai(prompt, size, params.get("output_path"))
+        return ToolResult(
+            tool_name="image_generate",
+            content=f"Unsupported provider '{provider}'. Use 'local' or 'openai'.",
+            success=False,
+        )
+
+    def _execute_local(
+        self, prompt: str, size: str, output_path: str | None
+    ) -> ToolResult:
+        if not _SIZE_RE.match(size):
+            size = "1024x1024"
+
+        if not Path(_LOCAL_GOVERNOR).exists():
             return ToolResult(
                 tool_name="image_generate",
                 content=(
-                    f"Invalid size '{size}'."
-                    f" Must be one of: {', '.join(sorted(_VALID_SIZES))}."
+                    f"Local image generation is not set up on this host "
+                    f"({_LOCAL_GOVERNOR} missing)."
                 ),
                 success=False,
             )
 
-        provider = params.get("provider", "openai")
-        output_path = params.get("output_path")
+        _MEDIA_IMAGES_DIR.mkdir(parents=True, exist_ok=True)
+        outfile = output_path or str(
+            _MEDIA_IMAGES_DIR
+            / f"jarvis-gen-{int(time.time())}-{uuid.uuid4().hex[:8]}.png"
+        )
 
-        if provider != "openai":
+        try:
+            proc = subprocess.run(
+                [_LOCAL_GOVERNOR, prompt, size, outfile],
+                capture_output=True,
+                text=True,
+                timeout=_LOCAL_TIMEOUT_SECONDS,
+            )
+        except subprocess.TimeoutExpired:
             return ToolResult(
                 tool_name="image_generate",
                 content=(
-                    f"Unsupported provider '{provider}'. Only 'openai' is supported."
+                    f"Image generation timed out after {_LOCAL_TIMEOUT_SECONDS}s."
+                ),
+                success=False,
+            )
+        except Exception as exc:
+            return ToolResult(
+                tool_name="image_generate",
+                content=f"Failed to run local image generation: {exc}",
+                success=False,
+            )
+
+        if proc.returncode != 0 or not Path(outfile).is_file():
+            tail = "\n".join((proc.stdout or "").splitlines()[-15:])
+            return ToolResult(
+                tool_name="image_generate",
+                content=(
+                    f"Local image generation failed (exit {proc.returncode}). "
+                    f"Last log lines:\n{tail}"
+                ),
+                success=False,
+            )
+
+        filename = Path(outfile).name
+        url = f"/jarvis-media/images/{filename}"
+
+        # IMPORTANT: do NOT embed the image as a base64 data URI here. The
+        # tool result content is fed back into the LLM's context by the
+        # orchestrator's function-calling loop -- a ~1-2MB base64 PNG blows
+        # past kat-coder-v2.5's 262144-token context window by an order of
+        # magnitude (observed: 1.7M+ tokens -> hard 400 from the router,
+        # surfaced as a 500 to the chat client). Returning just the relative
+        # URL keeps the tool result tiny; the model includes it as a normal
+        # markdown image reference and the frontend/browser fetches the
+        # actual bytes from the /jarvis-media/images/ static route.
+        alt = prompt.replace("[", "").replace("]", "")[:120]
+        content = f"![{alt}]({url})"
+
+        return ToolResult(
+            tool_name="image_generate",
+            content=content,
+            success=True,
+            metadata={"path": outfile, "url": url, "size": size, "provider": "local"},
+        )
+
+    def _execute_openai(
+        self, prompt: str, size: str, output_path: str | None
+    ) -> ToolResult:
+        valid_sizes = {"256x256", "512x512", "1024x1024"}
+        if size not in valid_sizes:
+            return ToolResult(
+                tool_name="image_generate",
+                content=(
+                    f"Invalid size '{size}' for OpenAI provider."
+                    f" Must be one of: {', '.join(sorted(valid_sizes))}."
                 ),
                 success=False,
             )
@@ -122,29 +229,26 @@ class ImageGenerateTool(BaseTool):
                 success=False,
             )
 
-        # Optionally save to file
         if output_path:
             try:
                 import httpx
 
                 resp = httpx.get(url, follow_redirects=True, timeout=60.0)
                 resp.raise_for_status()
-                from pathlib import Path
-
                 Path(output_path).write_bytes(resp.content)
             except Exception as exc:
                 return ToolResult(
                     tool_name="image_generate",
                     content=(f"Image generated but failed to save: {exc}. URL: {url}"),
                     success=False,
-                    metadata={"url": url, "size": size, "provider": provider},
+                    metadata={"url": url, "size": size, "provider": "openai"},
                 )
 
         return ToolResult(
             tool_name="image_generate",
             content=url,
             success=True,
-            metadata={"url": url, "size": size, "provider": provider},
+            metadata={"url": url, "size": size, "provider": "openai"},
         )
 
 

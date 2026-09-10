@@ -554,6 +554,18 @@ def create_app(
                 name="static-assets",
             )
 
+        # Serve Jarvis-generated media (images/video) so chat markdown can
+        # reference them by relative URL -- same origin as the API + frontend.
+        _media_gen_dir = pathlib.Path("/srv/media-gen")
+        for _sub in ("images", "videos"):
+            _d = _media_gen_dir / _sub
+            if _d.is_dir():
+                app.mount(
+                    f"/jarvis-media/{_sub}",
+                    _NoCacheStaticFiles(directory=_d),
+                    name=f"jarvis-media-{_sub}",
+                )
+
         @app.get("/{full_path:path}")
         async def spa_catch_all(full_path: str):
             """Serve static files directly, fall back to index.html for SPA routes."""
