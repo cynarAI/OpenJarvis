@@ -107,6 +107,28 @@ class TestVideoGenerateToolExecute:
         assert captured["aspect"] == "9:16"
         assert result.metadata["aspect_ratio"] == "9:16"
 
+    def test_output_path_traversal_is_contained_to_media_dir(
+        self, monkeypatch, tmp_path
+    ):
+        """A model-supplied output_path must never let the tool write
+        outside _MEDIA_VIDEOS_DIR -- only the basename is honored."""
+        self._patch_governor(monkeypatch, tmp_path)
+        escape_target = tmp_path / "escaped.mp4"
+
+        def _fake_run(args, **kwargs):
+            Path(args[-1]).write_bytes(b"fake")
+            return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+
+        with patch("openjarvis.tools.video_tool.subprocess.run", side_effect=_fake_run):
+            result = VideoGenerateTool().execute(
+                prompt="a dog running", output_path="../../../../escaped.mp4"
+            )
+
+        assert result.success is True
+        assert not escape_target.exists()
+        assert Path(result.metadata["path"]).parent == tmp_path / "videos"
+        assert result.metadata["url"] == "/jarvis-media/videos/escaped.mp4"
+
     def test_invalid_aspect_ratio_falls_back_to_default(self, monkeypatch, tmp_path):
         self._patch_governor(monkeypatch, tmp_path)
         captured: dict[str, str] = {}

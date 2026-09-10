@@ -64,12 +64,12 @@ def test_budget_unlimited_skips_check(tmp_path):
 
 
 def test_token_budget_exceeded(tmp_path):
-    """Agent exceeding max_tokens gets budget_exceeded."""
+    """Agent exceeding max_total_tokens gets budget_exceeded."""
     mgr = AgentManager(str(tmp_path / "test.db"))
     bus = EventBus()
     executor = AgentExecutor(mgr, bus)
 
-    agent = mgr.create_agent("token-heavy", config={"max_tokens": 1000})
+    agent = mgr.create_agent("token-heavy", config={"max_total_tokens": 1000})
     mgr.start_tick(agent["id"])
 
     result = AgentResult(content="done", metadata={"cost": 0.01, "tokens_used": 1500})
@@ -77,4 +77,29 @@ def test_token_budget_exceeded(tmp_path):
 
     updated = mgr.get_agent(agent["id"])
     assert updated["status"] == "budget_exceeded"
+    mgr.close()
+
+
+def test_sampling_max_tokens_is_not_a_lifetime_budget(tmp_path):
+    """max_tokens (the per-completion LLM sampling cap, see
+    agent_manager_routes.py's config.get("max_tokens", 1024)) must NOT be
+    reinterpreted as a lifetime token budget. Every agent created from a
+    template with a normal-looking sampling default like max_tokens=4096
+    would otherwise permanently self-destruct (no automatic recovery: the
+    scheduler skips "budget_exceeded" agents forever) the moment its
+    running total-tokens-across-all-ticks crossed that number -- usually
+    within one or two ticks. Use max_total_tokens for an actual budget cap.
+    """
+    mgr = AgentManager(str(tmp_path / "test.db"))
+    bus = EventBus()
+    executor = AgentExecutor(mgr, bus)
+
+    agent = mgr.create_agent("normal-sampling-cap", config={"max_tokens": 4096})
+    mgr.start_tick(agent["id"])
+
+    result = AgentResult(content="done", metadata={"cost": 0.0, "tokens_used": 15061})
+    executor._finalize_tick(agent["id"], result, error=None, duration=1.0)
+
+    updated = mgr.get_agent(agent["id"])
+    assert updated["status"] == "idle"
     mgr.close()

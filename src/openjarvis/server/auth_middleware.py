@@ -72,17 +72,23 @@ class AuthMiddleware(BaseHTTPMiddleware):
 
     @staticmethod
     def _requires_auth(path: str) -> bool:
-        """Protect API routes and operational metrics; leave the UI/health open.
+        """Protect API routes, operational metrics, and generated media;
+        leave the static UI bundle/health open.
 
         ``/metrics`` exposes request/token counters that should not be readable
         by unauthenticated clients, so it is gated alongside ``/v1`` and
-        ``/api``. ``/health`` stays open for liveness probes.
+        ``/api``. ``/jarvis-media`` serves images/videos the agent generated
+        on request -- unlike the app's own static JS/CSS bundle, that's
+        user-specific content, not gating it would let anyone who can reach
+        this host on the tailnet browse it without the API key. ``/health``
+        stays open for liveness probes.
         """
         return (
             path.startswith("/v1/")
             or path.startswith("/api/")
             or path == "/metrics"
             or path.startswith("/metrics/")
+            or path.startswith("/jarvis-media/")
         )
 
 
